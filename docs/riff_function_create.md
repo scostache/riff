@@ -6,15 +6,9 @@ Create a new function resource
 
 Create a new function resource from the content of the provided Git repo/revision or local source.
 
-The INVOKER arg defines the language runtime and function invoker that is added to the function code in the build step. The resulting image is then used to create a Knative Service (`service.serving.knative.dev`) instance of the name specified for the function. The following invokers are available:
+The --invoker flag can be used to force the language runtime and function invoker that is added to the function code in the build step. The resulting image is then used to create a Knative Service (`service.serving.knative.dev`) instance of the name specified for the function.
 
-- 'java': uses the riff Buildpack to build Maven or Gradle projects from source
-- 'jar': uses riff's java-function-invoker build for a prebuilt JAR file
-- 'node': uses riff's node-function-invoker build
-- 'command': uses riff's command-function-invoker build
-- 'custom': use a custom invoker. Specify with --invoker-url flag
-
-Buildpack based builds support building from local source or within the cluster. Images will be pushed to the registry specified in the image name, unless prefixed with 'dev.local/' in which case the image will only be available within the local Docker daemon.
+Images will be pushed to the registry specified in the image name.
 
 From then on you can use the sub-commands for the `service` command to interact with the service created for the function.
 
@@ -31,8 +25,8 @@ riff function create [flags]
 ### Examples
 
 ```
-  riff function create node square --git-repo https://github.com/acme/square --image acme/square --namespace joseph-ns
-  riff function create java tweets-logger --git-repo https://github.com/acme/tweets --image acme/tweets-logger:1.0.0
+  riff function create square --git-repo https://github.com/acme/square --artifact square.js --image acme/square --invoker node --namespace joseph-ns
+  riff function create tweets-logger --git-repo https://github.com/acme/tweets --image acme/tweets-logger:1.0.0
 ```
 
 ### Options
@@ -47,8 +41,8 @@ riff function create [flags]
       --handler method or class        the name of the method or class to invoke, depending on the invoker used
   -h, --help                           help for create
       --image repository/image[:tag]   the name of the image to build; must be a writable repository/image[:tag] with credentials configured
-      --invoker-url string             the path to a custom invoker url. Required if invoker is custom.
-  -l, --local-path path                path to local source to build the image from
+      --invoker language               invoker runtime to override language detected by buildpack
+  -l, --local-path path                path to local source to build the image from; only build-pack builds are supported at this time
   -n, --namespace namespace            the namespace of the service
   -v, --verbose                        print details of command progress
   -w, --wait                           wait until the created resource reaches either a successful or an error state (automatic with --verbose)

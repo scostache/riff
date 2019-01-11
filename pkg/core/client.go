@@ -12,7 +12,6 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package core
@@ -20,9 +19,9 @@ package core
 import (
 	"io"
 
-	eventing "github.com/knative/eventing/pkg/apis/channels/v1alpha1"
+	eventing "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
 	eventing_cs "github.com/knative/eventing/pkg/client/clientset/versioned"
-	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
+	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	serving "github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	serving_cs "github.com/knative/serving/pkg/client/clientset/versioned"
 	"k8s.io/client-go/kubernetes"
@@ -30,8 +29,8 @@ import (
 )
 
 type Client interface {
-	CreateFunction(options CreateFunctionOptions, log io.Writer) (*serving.Service, error)
-	BuildFunction(options BuildFunctionOptions, log io.Writer) error
+	CreateFunction(builder Builder, options CreateFunctionOptions, log io.Writer) (*serving.Service, error)
+	UpdateFunction(builder Builder, options UpdateFunctionOptions, log io.Writer) error
 
 	CreateSubscription(options CreateSubscriptionOptions) (*eventing.Subscription, error)
 	DeleteSubscription(options DeleteSubscriptionOptions) error
@@ -42,11 +41,15 @@ type Client interface {
 	DeleteChannel(options DeleteChannelOptions) error
 
 	ListServices(options ListServiceOptions) (*serving.ServiceList, error)
-	CreateService(options CreateOrReviseServiceOptions) (*serving.Service, error)
-	ReviseService(options CreateOrReviseServiceOptions) (*serving.Service, error)
+	CreateService(options CreateOrUpdateServiceOptions) (*serving.Service, error)
+	UpdateService(options CreateOrUpdateServiceOptions) (*serving.Service, error)
 	DeleteService(options DeleteServiceOptions) error
-	ServiceStatus(options ServiceStatusOptions) (*v1alpha1.ServiceCondition, error)
+	ServiceStatus(options ServiceStatusOptions) (*duckv1alpha1.Condition, error)
 	ServiceCoordinates(options ServiceInvokeOptions) (ingressIP string, hostName string, err error)
+}
+
+type Builder interface {
+	Build(appDir, buildImage, runImage, repoName string) error
 }
 
 type client struct {

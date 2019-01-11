@@ -14,11 +14,11 @@ Use the `--manifest` flag to specify the path or URL of a manifest file which pr
     istio:
     - https://path/to/istio-release.yaml
     knative:
+    - https://path/to/build-release.yaml
     - https://path/to/serving-release.yaml
     - https://path/to/eventing-release.yaml
-    - https://path/to/stub-bus-release.yaml
     namespace:
-    - https://path/to/riff-buildtemplate-release.yaml
+    - https://path/to/buildtemplate-release.yaml
 
 Note: relative file paths or http/https URLs may be used in the manifest.
 
@@ -31,7 +31,7 @@ riff system install [flags]
 ```
       --force             force the install of components without getting any prompts
   -h, --help              help for install
-  -m, --manifest string   manifest of kubernetes configuration files to be applied; can be a named manifest (stable or latest) or a path of a manifest file (default "stable")
+  -m, --manifest string   manifest of kubernetes configuration files to be applied; can be a named manifest (latest, stable) or a path of a manifest file (default "stable")
       --node-port         whether to use NodePort instead of LoadBalancer for ingress gateways
 ```
 

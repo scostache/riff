@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	core_v1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,7 +40,7 @@ func (c *client) ListServices(options ListServiceOptions) (*v1alpha1.ServiceList
 	return c.serving.ServingV1alpha1().Services(ns).List(meta_v1.ListOptions{})
 }
 
-type CreateOrReviseServiceOptions struct {
+type CreateOrUpdateServiceOptions struct {
 	Namespace string
 	Name      string
 	Image     string
@@ -50,7 +51,7 @@ type CreateOrReviseServiceOptions struct {
 	Wait      bool
 }
 
-func (c *client) CreateService(options CreateOrReviseServiceOptions) (*v1alpha1.Service, error) {
+func (c *client) CreateService(options CreateOrUpdateServiceOptions) (*v1alpha1.Service, error) {
 	ns := c.explicitOrConfigNamespace(options.Namespace)
 
 	s, err := newService(options)
@@ -67,7 +68,7 @@ func (c *client) CreateService(options CreateOrReviseServiceOptions) (*v1alpha1.
 
 }
 
-func (c *client) ReviseService(options CreateOrReviseServiceOptions) (*v1alpha1.Service, error) {
+func (c *client) UpdateService(options CreateOrUpdateServiceOptions) (*v1alpha1.Service, error) {
 	ns := c.explicitOrConfigNamespace(options.Namespace)
 
 	existingSvc, err := c.serving.ServingV1alpha1().Services(ns).Get(options.Name, meta_v1.GetOptions{})
@@ -101,7 +102,7 @@ func (c *client) ReviseService(options CreateOrReviseServiceOptions) (*v1alpha1.
 
 }
 
-func newService(options CreateOrReviseServiceOptions) (*v1alpha1.Service, error) {
+func newService(options CreateOrUpdateServiceOptions) (*v1alpha1.Service, error) {
 	envVars, err := ParseEnvVar(options.Env)
 	if err != nil {
 		return nil, err
@@ -144,7 +145,7 @@ type ServiceStatusOptions struct {
 	Name      string
 }
 
-func (c *client) ServiceStatus(options ServiceStatusOptions) (*v1alpha1.ServiceCondition, error) {
+func (c *client) ServiceStatus(options ServiceStatusOptions) (*duckv1alpha1.Condition, error) {
 
 	conds, err := c.ServiceConditions(options)
 	if err != nil {
@@ -160,7 +161,7 @@ func (c *client) ServiceStatus(options ServiceStatusOptions) (*v1alpha1.ServiceC
 	return nil, errors.New("No condition of type ServiceConditionReady found for the service")
 }
 
-func (c *client) ServiceConditions(options ServiceStatusOptions) ([]v1alpha1.ServiceCondition, error) {
+func (c *client) ServiceConditions(options ServiceStatusOptions) (duckv1alpha1.Conditions, error) {
 
 	s, err := c.service(options.Namespace, options.Name)
 	if err != nil {

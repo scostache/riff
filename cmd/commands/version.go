@@ -12,7 +12,6 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package commands
@@ -20,6 +19,7 @@ package commands
 import (
 	"fmt"
 
+	"github.com/projectriff/riff/pkg/env"
 	"github.com/spf13/cobra"
 )
 
@@ -27,20 +27,17 @@ const (
 	versionNumberOfArgs = iota
 )
 
-var cli_version = "unknown"
-var cli_gitsha = "unknown sha"
-var cli_gitdirty = ""
-
 func Version() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print version information about riff",
-		Args: cobra.ExactArgs(versionNumberOfArgs),
+		Short: "Print version information about " + env.Cli.Name,
+		Args:  cobra.ExactArgs(versionNumberOfArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cli_gitdirty != "" {
-				cli_gitdirty = ", with local modifications"
+			dirtyMsg := ""
+			if env.Cli.GitDirty != "" {
+				dirtyMsg = ", with local modifications"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Version\n  riff cli: %s (%s%s)\n", cli_version, cli_gitsha, cli_gitdirty)
+			fmt.Fprintf(cmd.OutOrStdout(), "Version\n  %s cli: %s (%s%s)\n", env.Cli.Name, env.Cli.Version, env.Cli.GitSha, dirtyMsg)
 			return nil
 		},
 	}

@@ -18,13 +18,12 @@ package commands
 
 import (
 	"fmt"
-	"github.com/projectriff/riff/pkg/fileutils"
-	"github.com/projectriff/riff/pkg/resource"
-	"os"
 	"os/user"
 	"strings"
 
-	"github.com/projectriff/riff/pkg/docker"
+	"github.com/buildpack/pack"
+
+	"github.com/projectriff/riff/pkg/env"
 
 	eventing "github.com/knative/eventing/pkg/client/clientset/versioned"
 	serving "github.com/knative/serving/pkg/client/clientset/versioned"
@@ -32,6 +31,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
@@ -81,40 +81,32 @@ func resolveHomePath(p string) (string, error) {
 
 }
 
-func CreateAndWireRootCommand() *cobra.Command {
+func CreateAndWireRootCommand(manifests map[string]*core.Manifest, localBuilder string, defaultRunImage string) *cobra.Command {
 
 	var client core.Client
 	var kc core.KubectlClient
-	var dockerClient docker.Docker
-	var imageClient core.ImageClient
 
 	rootCmd := &cobra.Command{
-		Use:   "riff",
+		Use:   env.Cli.Name,
 		Short: "Commands for creating and managing function resources",
 		Long: `riff is for functions.
 
-riff is a CLI for functions on Knative.
+` + env.Cli.Name + ` is a CLI for functions on Knative.
 See https://projectriff.io and https://github.com/knative/docs`,
 		SilenceErrors:              true, // We'll print errors ourselves (after usage rather than before)
 		SilenceUsage:               true, // We'll print the *help* message instead of *usage* ourselves
 		DisableAutoGenTag:          true,
 		SuggestionsMinimumDistance: 2,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			dockerClient = docker.RealDocker(os.Stdin, cmd.OutOrStdout(), cmd.OutOrStderr())
-			checker := fileutils.NewChecker()
-			copier := fileutils.NewCopier(cmd.OutOrStdout(), checker)
-			imageClient = core.NewImageClient(dockerClient, copier, checker, resource.ListImages, cmd.OutOrStdout())
-			return nil
-		},
 	}
 
 	installAdvancedUsage(rootCmd)
 
+	buildpackBuilder := &buildpackBuilder{}
 	function := Function()
 	installKubeConfigSupport(function, &client, &kc)
 	function.AddCommand(
-		FunctionCreate(&client),
-		FunctionBuild(&client),
+		FunctionCreate(buildpackBuilder, &client, FunctionCreateDefaults{LocalBuilder: localBuilder, DefaultRunImage: defaultRunImage}),
+		FunctionUpdate(buildpackBuilder, &client),
 	)
 
 	service := Service()
@@ -122,7 +114,7 @@ See https://projectriff.io and https://github.com/knative/docs`,
 	service.AddCommand(
 		ServiceList(&client),
 		ServiceCreate(&client),
-		ServiceRevise(&client),
+		ServiceUpdate(&client),
 		ServiceStatus(&client),
 		ServiceInvoke(&client),
 		ServiceDelete(&client),
@@ -136,23 +128,16 @@ See https://projectriff.io and https://github.com/knative/docs`,
 		ChannelDelete(&client),
 	)
 
-	image := Image()
-	image.AddCommand(
-		ImageRelocate(&imageClient),
-		ImageLoad(&imageClient),
-		ImagePush(&imageClient),
-	)
-
 	namespace := Namespace()
 	installKubeConfigSupport(namespace, &client, &kc)
 	namespace.AddCommand(
-		NamespaceInit(&kc),
+		NamespaceInit(manifests, &kc),
 	)
 
 	system := System()
 	installKubeConfigSupport(system, &client, &kc)
 	system.AddCommand(
-		SystemInstall(&kc),
+		SystemInstall(manifests, &kc),
 		SystemUninstall(&kc),
 	)
 
@@ -168,11 +153,10 @@ See https://projectriff.io and https://github.com/knative/docs`,
 		function,
 		service,
 		channel,
-		image,
 		namespace,
 		system,
 		subscription,
-		Docs(rootCmd),
+		Docs(rootCmd, LocalFs{}),
 		Version(),
 		Completion(rootCmd),
 	)
@@ -213,6 +197,9 @@ func installKubeConfigSupport(command *cobra.Command, client *core.Client, kc *c
 			return err
 		}
 		*client = core.NewClient(clientConfig, kubeClientSet, eventingClientSet, servingClientSet)
+		if err != nil {
+			return err
+		}
 		*kc = core.NewKubectlClient(kubeClientSet)
 
 		if oldPersistentPreRunE != nil {
@@ -220,5 +207,10 @@ func installKubeConfigSupport(command *cobra.Command, client *core.Client, kc *c
 		}
 		return nil
 	}
+}
 
+type buildpackBuilder struct{}
+
+func (*buildpackBuilder) Build(appDir, buildImage, runImage, repoName string) error {
+	return pack.Build(appDir, buildImage, runImage, repoName, true)
 }

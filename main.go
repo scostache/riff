@@ -17,16 +17,55 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
-	"fmt"
+	"github.com/projectriff/riff/pkg/core"
 
 	"github.com/projectriff/riff/cmd/commands"
 )
 
+var (
+	builder         = "projectriff/builder"
+	defaultRunImage = "packs/run"
+
+	manifests = map[string]*core.Manifest{
+		"latest": {
+			ManifestVersion: "0.1",
+			Istio: []string{
+				"https://storage.googleapis.com/knative-releases/serving/latest/istio.yaml",
+			},
+			Knative: []string{
+				"https://storage.googleapis.com/knative-releases/build/latest/release.yaml",
+				"https://storage.googleapis.com/knative-releases/serving/latest/serving.yaml",
+				"https://storage.googleapis.com/knative-releases/eventing/latest/eventing.yaml",
+				"https://storage.googleapis.com/knative-releases/eventing/latest/in-memory-channel.yaml",
+			},
+			Namespace: []string{
+				"https://storage.googleapis.com/projectriff/riff-buildtemplate/riff-cnb-buildtemplate.yaml",
+			},
+		},
+		"stable": {
+			ManifestVersion: "0.1",
+			Istio: []string{
+				"https://storage.googleapis.com/knative-releases/serving/previous/v0.2.3/istio.yaml",
+			},
+			Knative: []string{
+				"https://storage.googleapis.com/knative-releases/build/previous/v0.2.0/release.yaml",
+				"https://storage.googleapis.com/knative-releases/serving/previous/v0.2.3/serving.yaml",
+				"https://storage.googleapis.com/knative-releases/eventing/previous/v0.2.1/eventing.yaml",
+				"https://storage.googleapis.com/knative-releases/eventing/previous/v0.2.1/in-memory-channel.yaml",
+			},
+			Namespace: []string{
+				"https://storage.googleapis.com/projectriff/riff-buildtemplate/riff-cnb-buildtemplate-0.1.0.yaml",
+			},
+		},
+	}
+)
+
 func main() {
 
-	root := commands.CreateAndWireRootCommand()
+	root := commands.CreateAndWireRootCommand(manifests, builder, defaultRunImage)
 
 	sub, err := root.ExecuteC()
 	if err != nil {

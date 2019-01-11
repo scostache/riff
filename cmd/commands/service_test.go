@@ -25,8 +25,9 @@ import (
 
 	"time"
 
-	v1alpha12 "github.com/knative/eventing/pkg/apis/channels/v1alpha1"
+	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
 	"github.com/knative/pkg/apis"
+	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -35,7 +36,7 @@ import (
 	"github.com/projectriff/riff/pkg/core/mocks"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/mock"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -85,7 +86,7 @@ var _ = Describe("The riff service create command", func() {
 		It("should involve the core.Client", func() {
 			sc.SetArgs([]string{"my-service", "--image", "foo/bar", "--namespace", "ns"})
 
-			o := core.CreateOrReviseServiceOptions{
+			o := core.CreateOrUpdateServiceOptions{
 				Name:    "my-service",
 				Image:   "foo/bar",
 				Env:     []string{},
@@ -109,7 +110,7 @@ var _ = Describe("The riff service create command", func() {
 			sc.SetArgs([]string{"my-service", "--image", "foo/bar", "--namespace", "ns", "--env", "FOO=bar",
 				"--env", "BAZ=qux", "--env-from", "secretKeyRef:foo:bar"})
 
-			o := core.CreateOrReviseServiceOptions{
+			o := core.CreateOrUpdateServiceOptions{
 				Name:    "my-service",
 				Image:   "foo/bar",
 				Env:     []string{"FOO=bar", "BAZ=qux"},
@@ -124,7 +125,7 @@ var _ = Describe("The riff service create command", func() {
 		It("should print when --dry-run is set", func() {
 			sc.SetArgs([]string{"square", "--image", "foo/bar", "--dry-run"})
 
-			serviceOptions := core.CreateOrReviseServiceOptions{
+			serviceOptions := core.CreateOrUpdateServiceOptions{
 				Name:    "square",
 				Image:   "foo/bar",
 				Env:     []string{},
@@ -134,9 +135,9 @@ var _ = Describe("The riff service create command", func() {
 
 			svc := v1alpha1.Service{}
 			svc.Name = "square"
-			c := v1alpha12.Channel{}
+			c := eventingv1alpha1.Channel{}
 			c.Name = "my-channel"
-			s := v1alpha12.Subscription{}
+			s := eventingv1alpha1.Subscription{}
 			s.Name = "square"
 			asMock.On("CreateService", serviceOptions).Return(&svc, nil)
 
@@ -160,7 +161,7 @@ status: {}
 ---
 `
 
-var _ = Describe("The riff service revise command", func() {
+var _ = Describe("The riff service update command", func() {
 	Context("when given wrong args or flags", func() {
 		var (
 			mockClient core.Client
@@ -168,7 +169,7 @@ var _ = Describe("The riff service revise command", func() {
 		)
 		BeforeEach(func() {
 			mockClient = nil
-			cc = commands.ServiceRevise(&mockClient)
+			cc = commands.ServiceUpdate(&mockClient)
 		})
 		It("should fail with no args", func() {
 			cc.SetArgs([]string{})
@@ -192,7 +193,7 @@ var _ = Describe("The riff service revise command", func() {
 			client = new(mocks.Client)
 			asMock = client.(*mocks.Client)
 
-			sc = commands.ServiceRevise(&client)
+			sc = commands.ServiceUpdate(&client)
 		})
 		AfterEach(func() {
 			asMock.AssertExpectations(GinkgoT())
@@ -200,7 +201,7 @@ var _ = Describe("The riff service revise command", func() {
 		It("should involve the core.Client", func() {
 			sc.SetArgs([]string{"my-service", "--image", "foo/bar", "--namespace", "ns"})
 
-			o := core.CreateOrReviseServiceOptions{
+			o := core.CreateOrUpdateServiceOptions{
 				Name:    "my-service",
 				Image:   "foo/bar",
 				Env:     []string{},
@@ -208,7 +209,7 @@ var _ = Describe("The riff service revise command", func() {
 			}
 			o.Namespace = "ns"
 
-			asMock.On("ReviseService", o).Return(nil, nil)
+			asMock.On("UpdateService", o).Return(nil, nil)
 			err := sc.Execute()
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -216,7 +217,7 @@ var _ = Describe("The riff service revise command", func() {
 			sc.SetArgs([]string{"my-service", "--image", "foo/bar"})
 
 			e := fmt.Errorf("some error")
-			asMock.On("ReviseService", mock.Anything).Return(nil, e)
+			asMock.On("UpdateService", mock.Anything).Return(nil, e)
 			err := sc.Execute()
 			Expect(err).To(MatchError(e))
 		})
@@ -224,7 +225,7 @@ var _ = Describe("The riff service revise command", func() {
 			sc.SetArgs([]string{"my-service", "--image", "foo/bar", "--namespace", "ns", "--env", "FOO=bar",
 				"--env", "BAZ=qux", "--env-from", "secretKeyRef:foo:bar"})
 
-			o := core.CreateOrReviseServiceOptions{
+			o := core.CreateOrUpdateServiceOptions{
 				Name:    "my-service",
 				Image:   "foo/bar",
 				Env:     []string{"FOO=bar", "BAZ=qux"},
@@ -232,14 +233,14 @@ var _ = Describe("The riff service revise command", func() {
 			}
 			o.Namespace = "ns"
 
-			asMock.On("ReviseService", o).Return(nil, nil)
+			asMock.On("UpdateService", o).Return(nil, nil)
 			err := sc.Execute()
 			Expect(err).NotTo(HaveOccurred())
 		})
 		It("should print when --dry-run is set", func() {
 			sc.SetArgs([]string{"square", "--image", "foo/bar", "--dry-run"})
 
-			serviceOptions := core.CreateOrReviseServiceOptions{
+			serviceOptions := core.CreateOrUpdateServiceOptions{
 				Name:    "square",
 				Image:   "foo/bar",
 				Env:     []string{},
@@ -264,7 +265,7 @@ var _ = Describe("The riff service revise command", func() {
 					},
 				},
 			}
-			asMock.On("ReviseService", serviceOptions).Return(&svc, nil)
+			asMock.On("UpdateService", serviceOptions).Return(&svc, nil)
 
 			stdout := &strings.Builder{}
 			sc.SetOutput(stdout)
@@ -272,13 +273,13 @@ var _ = Describe("The riff service revise command", func() {
 			err := sc.Execute()
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(stdout.String()).To(Equal(serviceReviseDryRun))
+			Expect(stdout.String()).To(Equal(serviceUpdateDryRun))
 		})
 
 	})
 })
 
-const serviceReviseDryRun = `metadata:
+const serviceUpdateDryRun = `metadata:
   creationTimestamp: null
   name: square
 spec:
@@ -342,7 +343,7 @@ var _ = Describe("The riff service status command", func() {
 			}
 			o.Namespace = "ns"
 
-			sc := &v1alpha1.ServiceCondition{
+			sc := &duckv1alpha1.Condition{
 				Type:    v1alpha1.ServiceConditionReady,
 				Status:  v1.ConditionFalse,
 				Message: "punk broke",
@@ -421,7 +422,7 @@ var _ = Describe("The riff service list command", func() {
 				Items: []v1alpha1.Service{
 					{
 						ObjectMeta: meta_v1.ObjectMeta{Name: "foo"},
-						Status: v1alpha1.ServiceStatus{Conditions: []v1alpha1.ServiceCondition{
+						Status: v1alpha1.ServiceStatus{Conditions: duckv1alpha1.Conditions{
 							{
 								Type:    v1alpha1.ServiceConditionReady,
 								Reason:  "Failed",
@@ -432,7 +433,7 @@ var _ = Describe("The riff service list command", func() {
 					},
 					{
 						ObjectMeta: meta_v1.ObjectMeta{Name: "wizz"},
-						Status: v1alpha1.ServiceStatus{Conditions: []v1alpha1.ServiceCondition{
+						Status: v1alpha1.ServiceStatus{Conditions: duckv1alpha1.Conditions{
 							{
 								Type:   v1alpha1.ServiceConditionReady,
 								Status: v1.ConditionTrue,

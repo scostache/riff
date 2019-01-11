@@ -17,14 +17,19 @@
 package commands
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/projectriff/riff/pkg/core"
+	"github.com/projectriff/riff/pkg/env"
 	"github.com/spf13/cobra"
 )
 
 func Namespace() *cobra.Command {
 	return &cobra.Command{
 		Use:   "namespace",
-		Short: "Manage namespaces used for riff resources",
+		Short: fmt.Sprintf("Manage namespaces used for %s resources", env.Cli.Name),
 	}
 }
 
@@ -33,27 +38,34 @@ const (
 	namespaceInitNumberOfArgs
 )
 
-func NamespaceInit(kc *core.KubectlClient) *cobra.Command {
+func NamespaceInit(manifests map[string]*core.Manifest, kc *core.KubectlClient) *cobra.Command {
 	options := core.NamespaceInitOptions{}
+
+	var namedManifests []string
+	for k, _ := range manifests {
+		namedManifests = append(namedManifests, k)
+	}
+	sort.Strings(namedManifests)
 
 	command := &cobra.Command{
 		Use:     "init",
-		Short:   "initialize riff resources in the namespace",
-		Example: `  riff namespace init default --secret build-secret`,
+		Short:   "initialize " + env.Cli.Name + " resources in the namespace",
+		Example: `  ` + env.Cli.Name + ` namespace init default --secret build-secret`,
 		Args: ArgValidationConjunction(
 			cobra.ExactArgs(namespaceInitNumberOfArgs),
 			AtPosition(namespaceInitNameIndex, ValidName()),
 		),
 		PreRunE: FlagsValidatorAsCobraRunE(
 			FlagsValidationConjunction(
-				AtMostOneOf("gcr", "dockerhub"),
+				AtMostOneOf("gcr", "dockerhub", "no-secret"),
+				AtMostOneOf("secret", "no-secret"),
 				NotBlank("secret"),
 			),
 		),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nsName := args[channelCreateNameIndex]
 			options.NamespaceName = nsName
-			err := (*kc).NamespaceInit(options)
+			err := (*kc).NamespaceInit(manifests, options)
 			if err != nil {
 				return err
 			}
@@ -65,8 +77,15 @@ func NamespaceInit(kc *core.KubectlClient) *cobra.Command {
 
 	LabelArgs(command, "NAME")
 
-	command.Flags().StringVarP(&options.Manifest, "manifest", "m", "stable", "manifest of YAML files to be applied; can be a named manifest (stable or latest) or a path or URL of a manifest file")
+	if len(namedManifests) > 0 {
+		desc := fmt.Sprintf("manifest of kubernetes configuration files to be applied; can be a named manifest (%s) or a path of a manifest file", strings.Join(namedManifests, ", "))
+		command.Flags().StringVarP(&options.Manifest, "manifest", "m", "stable", desc)
+	} else {
+		command.Flags().StringVarP(&options.Manifest, "manifest", "m", "", "path to a manifest of kubernetes configuration files to be applied")
+		command.MarkFlagRequired("manifest")
+	}
 
+	command.Flags().BoolVarP(&options.NoSecret, "no-secret", "", false, "no secret required for the image registry")
 	command.Flags().StringVarP(&options.SecretName, "secret", "s", "push-credentials", "the name of a `secret` containing credentials for the image registry")
 	command.Flags().StringVar(&options.GcrTokenPath, "gcr", "", "path to a file containing Google Container Registry credentials")
 	command.Flags().StringVar(&options.DockerHubUsername, "dockerhub", "", "dockerhub username for authentication; password will be read from stdin")

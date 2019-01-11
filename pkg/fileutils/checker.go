@@ -12,7 +12,6 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package fileutils
@@ -44,6 +43,7 @@ func NewChecker() *checker {
 	return &checker{}
 }
 
+// Exists returns true if and only if a file exists at the given path.
 func (c *checker) Exists(path string) bool {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return false
@@ -51,6 +51,7 @@ func (c *checker) Exists(path string) bool {
 	return true
 }
 
+// Filemode returns the file mode of the file at the given path.
 func (c *checker) Filemode(path string) (os.FileMode, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {

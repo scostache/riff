@@ -18,14 +18,16 @@ package commands
 
 import (
 	"fmt"
-	"k8s.io/api/core/v1"
 	"os"
 	"os/exec"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
+
 	"github.com/frioux/shellquote"
-	v1alpha12 "github.com/knative/serving/pkg/apis/serving/v1alpha1"
+	servingv1alpha1 "github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	"github.com/projectriff/riff/pkg/core"
+	"github.com/projectriff/riff/pkg/env"
 	"github.com/spf13/cobra"
 )
 
@@ -35,8 +37,8 @@ const (
 )
 
 const (
-	serviceReviseServiceNameIndex = iota
-	serviceReviseNumberOfArgs
+	serviceUpdateServiceNameIndex = iota
+	serviceUpdateNumberOfArgs
 )
 
 const (
@@ -69,7 +71,7 @@ func Service() *cobra.Command {
 
 func ServiceCreate(fcTool *core.Client) *cobra.Command {
 
-	createServiceOptions := core.CreateOrReviseServiceOptions{}
+	createServiceOptions := core.CreateOrUpdateServiceOptions{}
 
 	command := &cobra.Command{
 		Use:   "create",
@@ -78,9 +80,9 @@ func ServiceCreate(fcTool *core.Client) *cobra.Command {
 
 ` + envFromLongDesc + `
 `,
-		Example: `  riff service create square --image acme/square:1.0 --namespace joseph-ns
-  riff service create greeter --image acme/greeter:1.0 --env FOO=bar --env MESSAGE=Hello
-  riff service create tweets-logger --image acme/tweets-logger:1.0.0`,
+		Example: `  ` + env.Cli.Name + ` service create square --image acme/square:1.0 --namespace joseph-ns
+  ` + env.Cli.Name + ` service create greeter --image acme/greeter:1.0 --env FOO=bar --env MESSAGE=Hello
+  ` + env.Cli.Name + ` service create tweets-logger --image acme/tweets-logger:1.0.0`,
 		Args: ArgValidationConjunction(
 			cobra.ExactArgs(serviceCreateNumberOfArgs),
 			AtPosition(serviceCreateServiceNameIndex, ValidName()),
@@ -121,26 +123,26 @@ func ServiceCreate(fcTool *core.Client) *cobra.Command {
 	return command
 }
 
-func ServiceRevise(client *core.Client) *cobra.Command {
-	reviseServiceOptions := core.CreateOrReviseServiceOptions{}
+func ServiceUpdate(client *core.Client) *cobra.Command {
+	updateServiceOptions := core.CreateOrUpdateServiceOptions{}
 
 	command := &cobra.Command{
-		Use:     "revise",
+		Use:     "update",
 		Short:   "Create a new revision for a service, with updated attributes",
 		Long:    `Create a new revision for a service, updating the application/function image and/or environment.`,
-		Example: `  riff service revise square --image acme/square:1.1 --namespace joseph-ns`,
+		Example: `  ` + env.Cli.Name + ` service update square --image acme/square:1.1 --namespace joseph-ns`,
 		Args: ArgValidationConjunction(
-			cobra.ExactArgs(serviceReviseNumberOfArgs),
-			AtPosition(serviceReviseServiceNameIndex, ValidName()),
+			cobra.ExactArgs(serviceUpdateNumberOfArgs),
+			AtPosition(serviceUpdateServiceNameIndex, ValidName()),
 		),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fnName := args[serviceReviseServiceNameIndex]
-			reviseServiceOptions.Name = fnName
-			svc, err := (*client).ReviseService(reviseServiceOptions)
+			fnName := args[serviceUpdateServiceNameIndex]
+			updateServiceOptions.Name = fnName
+			svc, err := (*client).UpdateService(updateServiceOptions)
 			if err != nil {
 				return err
 			}
-			if reviseServiceOptions.DryRun {
+			if updateServiceOptions.DryRun {
 				marshaller := NewMarshaller(cmd.OutOrStdout())
 				if err = marshaller.Marshal(svc); err != nil {
 					return err
@@ -155,11 +157,11 @@ func ServiceRevise(client *core.Client) *cobra.Command {
 
 	LabelArgs(command, "SERVICE_NAME")
 
-	command.Flags().StringVarP(&reviseServiceOptions.Namespace, "namespace", "n", "", "the `namespace` of the service")
-	command.Flags().BoolVar(&reviseServiceOptions.DryRun, "dry-run", false, dryRunUsage)
-	command.Flags().StringVar(&reviseServiceOptions.Image, "image", "", "the `name[:tag]` reference of an image containing the application/function")
-	command.Flags().StringArrayVar(&reviseServiceOptions.Env, "env", []string{}, envUsage)
-	command.Flags().StringArrayVar(&reviseServiceOptions.EnvFrom, "env-from", []string{}, envFromUsage)
+	command.Flags().StringVarP(&updateServiceOptions.Namespace, "namespace", "n", "", "the `namespace` of the service")
+	command.Flags().BoolVar(&updateServiceOptions.DryRun, "dry-run", false, dryRunUsage)
+	command.Flags().StringVar(&updateServiceOptions.Image, "image", "", "the `name[:tag]` reference of an image containing the application/function")
+	command.Flags().StringArrayVar(&updateServiceOptions.Env, "env", []string{}, envUsage)
+	command.Flags().StringArrayVar(&updateServiceOptions.EnvFrom, "env-from", []string{}, envFromUsage)
 
 	return command
 }
@@ -171,7 +173,7 @@ func ServiceStatus(fcClient *core.Client) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "status",
 		Short:   "Display the status of a service",
-		Example: `  riff service status square --namespace joseph-ns`,
+		Example: `  ` + env.Cli.Name + ` service status square --namespace joseph-ns`,
 		Args: ArgValidationConjunction(
 			cobra.ExactArgs(serviceStatusNumberOfArgs),
 			AtPosition(serviceStatusServiceNameIndex, ValidName()),
@@ -211,8 +213,8 @@ func ServiceList(fcClient *core.Client) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List service resources",
-		Example: `  riff service list
-  riff service list --namespace joseph-ns`,
+		Example: `  ` + env.Cli.Name + ` service list
+  ` + env.Cli.Name + ` service list --namespace joseph-ns`,
 		Args: cobra.ExactArgs(serviceListNumberOfArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			services, err := (*fcClient).ListServices(listServiceOptions)
@@ -243,8 +245,8 @@ func ServiceInvoke(fcClient *core.Client) *cobra.Command {
 The curl command is printed so it can be copied and extended.
 
 Additional curl arguments and flags may be specified after a double dash (--).`,
-		Example: `  riff service invoke square --namespace joseph-ns
-  riff service invoke square /foo -- --data 42`,
+		Example: `  ` + env.Cli.Name + ` service invoke square --namespace joseph-ns
+  ` + env.Cli.Name + ` service invoke square /foo -- --data 42`,
 		PreRunE: FlagsValidatorAsCobraRunE(AtMostOneOf("json", "text")),
 		Args: UpToDashDash(ArgValidationConjunction(
 			cobra.MinimumNArgs(serviceInvokeMaxNumberOfArgs-1),
@@ -309,7 +311,7 @@ func ServiceDelete(fcClient *core.Client) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "delete",
 		Short:   "Delete an existing service",
-		Example: `  riff service delete square --namespace joseph-ns`,
+		Example: `  ` + env.Cli.Name + ` service delete square --namespace joseph-ns`,
 		Args: ArgValidationConjunction(
 			cobra.ExactArgs(serviceDeleteNumberOfArgs),
 			AtPosition(serviceDeleteServiceNameIndex, ValidName()),
@@ -334,7 +336,7 @@ func ServiceDelete(fcClient *core.Client) *cobra.Command {
 	return command
 }
 
-func serviceToInterfaceSlice(subscriptions []v1alpha12.Service) []interface{} {
+func serviceToInterfaceSlice(subscriptions []servingv1alpha1.Service) []interface{} {
 	result := make([]interface{}, len(subscriptions))
 	for i := range subscriptions {
 		result[i] = subscriptions[i]
@@ -346,13 +348,13 @@ func makeServiceExtractors() []NamedExtractor {
 	return []NamedExtractor{
 		{
 			name: "NAME",
-			fn:   func(s interface{}) string { return s.(v1alpha12.Service).Name },
+			fn:   func(s interface{}) string { return s.(servingv1alpha1.Service).Name },
 		},
 		{
 			name: "STATUS",
 			fn: func(s interface{}) string {
-				service := s.(v1alpha12.Service)
-				cond := service.Status.GetCondition(v1alpha12.ServiceConditionReady)
+				service := s.(servingv1alpha1.Service)
+				cond := service.Status.GetCondition(servingv1alpha1.ServiceConditionReady)
 				if cond == nil {
 					return "Unknown"
 				}

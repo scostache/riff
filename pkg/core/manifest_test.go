@@ -12,12 +12,17 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package core_test
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
+
+	"github.com/projectriff/riff/pkg/test_support"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/projectriff/riff/pkg/core"
@@ -72,7 +77,7 @@ var _ = Describe("Manifest", func() {
 			})
 
 			It("should return a suitable error", func() {
-				Expect(err).To(MatchError(HavePrefix("Manifest is incomplete: istio array missing: ")))
+				Expect(err).To(MatchError(HavePrefix("manifest is incomplete: istio array missing: ")))
 			})
 		})
 
@@ -82,7 +87,7 @@ var _ = Describe("Manifest", func() {
 			})
 
 			It("should return a suitable error", func() {
-				Expect(err).To(MatchError(HavePrefix("Manifest is incomplete: knative array missing: ")))
+				Expect(err).To(MatchError(HavePrefix("manifest is incomplete: knative array missing: ")))
 			})
 		})
 
@@ -92,17 +97,22 @@ var _ = Describe("Manifest", func() {
 			})
 
 			It("should return a suitable error", func() {
-				Expect(err).To(MatchError(HavePrefix("Manifest is incomplete: namespace array missing: ")))
+				Expect(err).To(MatchError(HavePrefix("manifest is incomplete: namespace array missing: ")))
 			})
 		})
 
 		Context("when the manifest contains a resource with an absolute path", func() {
 			BeforeEach(func() {
-				manifestPath = "./fixtures/manifest/absolutepath.yaml"
+				manifestPath = filepath.Join("fixtures", "manifest")
+				if runtime.GOOS == "windows" {
+					manifestPath = filepath.Join(manifestPath, "absolutepath.windows.yaml")
+				} else {
+					manifestPath = filepath.Join(manifestPath, "absolutepath.yaml")
+				}
 			})
 
 			It("should return a suitable error", func() {
-				Expect(err).To(MatchError("resources must use a http or https URL or a relative path: absolute path not supported: /x"))
+				Expect(err).To(MatchError(ContainSubstring("resources must use a http or https URL or a relative path: absolute path not supported: ")))
 			})
 		})
 
@@ -130,13 +140,78 @@ var _ = Describe("Manifest", func() {
 			})
 
 			It("should parse the Knative array", func() {
-				Expect(manifest.Knative).To(ConsistOf("https://serving-release", "eventing-release", "stub-bus-release"))
+				Expect(manifest.Knative).To(ConsistOf("build-release", "https://serving-release", "eventing-release"))
 			})
 
-			It("should parse the Knative array", func() {
+			It("should parse the build template array", func() {
 				Expect(manifest.Namespace).To(ConsistOf("buildtemplate-release"))
+			})
+
+			Describe("ResourceAbsolutePath", func() {
+				var manifestDir string
+
+				BeforeEach(func() {
+					wd, err := os.Getwd()
+					Expect(err).NotTo(HaveOccurred())
+					manifestDir = filepath.Join(wd, "fixtures", "manifest")
+				})
+
+				It("should return a http URL unchanged", func() {
+					Expect(manifest.ResourceAbsolutePath("http://istio-release")).To(Equal("http://istio-release"))
+				})
+
+				It("should return a https URL unchanged", func() {
+					Expect(manifest.ResourceAbsolutePath("https://serving-release")).To(Equal("https://serving-release"))
+				})
+
+				It("should return the absolute file path from a file URL", func() {
+					wd, err := os.Getwd()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(manifest.ResourceAbsolutePath(test_support.FileURL(wd))).To(Equal(wd))
+				})
+
+				It("should return the absolute equivalent of a relative path", func() {
+					Expect(manifest.ResourceAbsolutePath("file")).To(Equal(filepath.Join(manifestDir, "file")))
+				})
+
+				It("should return an absolute file path unchanged", func() {
+					path := filepath.Join(manifestDir, "file")
+					Expect(manifest.ResourceAbsolutePath(path)).To(Equal(path))
+				})
 			})
 		})
 	})
 
+	Describe("ResolveManifest", func() {
+		var (
+			manifests    map[string]*core.Manifest
+			testManifest *core.Manifest
+			manifest     *core.Manifest
+			err          error
+		)
+
+		BeforeEach(func() {
+			testManifest = &core.Manifest{}
+			manifests = map[string]*core.Manifest{"test": testManifest}
+		})
+
+		JustBeforeEach(func() {
+			manifest, err = core.ResolveManifest(manifests, "test")
+		})
+
+		It("should return with no error", func() {
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should resolve the manifest correctly", func() {
+			Expect(manifest).To(Equal(testManifest))
+		})
+
+		Describe("ResourceAbsolutePath", func() {
+			It("should return a suitable error", func() {
+				_, err := manifest.ResourceAbsolutePath("file")
+				Expect(err).To(MatchError("relative path undefined since manifest was not read from a directory"))
+			})
+		})
+	})
 })

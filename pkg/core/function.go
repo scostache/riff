@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The original author or authors
+ * Copyright 2018-2019 The original author or authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,15 +22,21 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/boz/go-logutil"
+	logutil "github.com/boz/go-logutil"
+
+	"github.com/BurntSushi/toml"
+
 	"github.com/boz/kail"
 	"github.com/boz/kcache/types/pod"
-	"github.com/buildpack/pack"
 	build "github.com/knative/build/pkg/apis/build/v1alpha1"
+	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
+	"github.com/projectriff/riff/pkg/env"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -42,10 +48,12 @@ const (
 	// annotation names with slashes are rejected :-/
 	buildpackBuildImageAnnotation = "riff.projectriff.io-buildpack-buildImage"
 	buildpackRunImageAnnotation   = "riff.projectriff.io-buildpack-runImage"
+	pollServiceTimeout            = 10 * time.Minute
+	pollServicePollingInterval    = time.Second
 )
 
 type CreateFunctionOptions struct {
-	CreateOrReviseServiceOptions
+	CreateOrUpdateServiceOptions
 
 	LocalPath   string
 	GitRepo     string
@@ -53,16 +61,21 @@ type CreateFunctionOptions struct {
 
 	Invoker        string
 	BuildpackImage string
-	InvokerURL     string
+	RunImage       string
 
 	Handler  string
 	Artifact string
 }
 
-func (c *client) CreateFunction(options CreateFunctionOptions, log io.Writer) (*v1alpha1.Service, error) {
+func (c *client) CreateFunction(buildpackBuilder Builder, options CreateFunctionOptions, log io.Writer) (*v1alpha1.Service, error) {
 	ns := c.explicitOrConfigNamespace(options.Namespace)
+	functionName := options.Name
+	_, err := c.serving.ServingV1alpha1().Services(ns).Get(functionName, v1.GetOptions{})
+	if err == nil {
+		return nil, fmt.Errorf("service '%s' already exists in namespace '%s'", functionName, ns)
+	}
 
-	s, err := newService(options.CreateOrReviseServiceOptions)
+	s, err := newService(options.CreateOrUpdateServiceOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +84,7 @@ func (c *client) CreateFunction(options CreateFunctionOptions, log io.Writer) (*
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	labels[functionLabel] = options.Name
+	labels[functionLabel] = functionName
 	s.Spec.RunLatest.Configuration.RevisionTemplate.SetLabels(labels)
 	annotations := s.Spec.RunLatest.Configuration.RevisionTemplate.Annotations
 	if annotations == nil {
@@ -80,66 +93,43 @@ func (c *client) CreateFunction(options CreateFunctionOptions, log io.Writer) (*
 	annotations[buildAnnotation] = "1"
 	s.Spec.RunLatest.Configuration.RevisionTemplate.SetAnnotations(annotations)
 
-	if options.InvokerURL != "" {
-		if options.LocalPath != "" {
-			return nil, fmt.Errorf("the selected invoker %q does not support local builds", options.Invoker)
+	if options.LocalPath != "" {
+		appDir := options.LocalPath
+		buildImage := options.BuildpackImage
+		runImage := options.RunImage
+		repoName := options.Image
+		if s.ObjectMeta.Annotations == nil {
+			s.ObjectMeta.Annotations = make(map[string]string)
 		}
-		// invoker based cluster build
-		s.Spec.RunLatest.Configuration.Build = &build.BuildSpec{
-			ServiceAccountName: "riff-build",
-			Source:             c.makeBuildSourceSpec(options),
-			Template: &build.TemplateInstantiationSpec{
-				Name: "riff",
-				Arguments: []build.ArgumentSpec{
-					{Name: "IMAGE", Value: options.Image},
-					{Name: "INVOKER_PATH", Value: options.InvokerURL},
-					{Name: "FUNCTION_ARTIFACT", Value: options.Artifact},
-					{Name: "FUNCTION_HANDLER", Value: options.Handler},
-					{Name: "FUNCTION_NAME", Value: options.Name},
-				},
-			},
-		}
-	} else if options.BuildpackImage != "" {
-		// TODO support options.Artifact and options.Handler
-		if options.LocalPath != "" {
-			appDir := options.LocalPath
-			buildImage := options.BuildpackImage
-			runImage := "packs/run"
-			repoName := options.Image
-			publish := publishImage(repoName)
+		s.ObjectMeta.Annotations[buildpackBuildImageAnnotation] = buildImage
+		s.ObjectMeta.Annotations[buildpackRunImageAnnotation] = runImage
 
-			if s.ObjectMeta.Annotations == nil {
-				s.ObjectMeta.Annotations = make(map[string]string)
-			}
-			s.ObjectMeta.Annotations[buildpackBuildImageAnnotation] = buildImage
-			s.ObjectMeta.Annotations[buildpackRunImageAnnotation] = runImage
-
-			if options.DryRun {
-				// skip build for a dry run
-				log.Write([]byte("Skipping local build\n"))
-			} else {
-				err := pack.Build(appDir, buildImage, runImage, repoName, publish)
-				if err != nil {
-					return nil, err
-				}
-			}
+		if options.DryRun {
+			// skip build for a dry run
+			log.Write([]byte("Skipping local build\n"))
 		} else {
-			// buildpack based cluster build
-			s.Spec.RunLatest.Configuration.Build = &build.BuildSpec{
-				ServiceAccountName: "riff-build",
-				Source:             c.makeBuildSourceSpec(options),
-				Template: &build.TemplateInstantiationSpec{
-					Name: "riff-cnb",
-					Arguments: []build.ArgumentSpec{
-						{Name: "IMAGE", Value: options.Image},
-						// TODO configure buildtemplate based on buildpack image
-						// {Name: "TBD", Value: options.BuildpackImage},
-					},
-				},
+			if err := c.writeRiffToml(options); err != nil {
+				return nil, err
+			}
+			defer func() { _ = c.deleteRiffToml(options) }()
+
+			err = buildLocally(buildpackBuilder, appDir, buildImage, runImage, repoName)
+			if err != nil {
+				return nil, err
 			}
 		}
 	} else {
-		return nil, fmt.Errorf("unknown build permutation")
+		// buildpack based cluster build
+		s.Spec.RunLatest.Configuration.Build = &v1alpha1.RawExtension{
+			BuildSpec: &build.BuildSpec{
+				ServiceAccountName: "riff-build",
+				Source:             c.makeBuildSourceSpec(options),
+				Template: &build.TemplateInstantiationSpec{
+					Name:      "riff-cnb",
+					Arguments: c.makeBuildArguments(options),
+				},
+			},
+		}
 	}
 
 	if !options.DryRun {
@@ -154,7 +144,7 @@ func (c *client) CreateFunction(options CreateFunctionOptions, log io.Writer) (*
 			if options.Verbose {
 				go c.displayFunctionCreationProgress(ns, s.Name, log, stopChan, errChan)
 			}
-			err := c.waitForSuccessOrFailure(ns, s.Name, 1, stopChan, errChan)
+			err := c.waitForSuccessOrFailure(ns, s.Name, 1, stopChan, errChan, options.Verbose)
 			if err != nil {
 				return nil, err
 			}
@@ -164,6 +154,36 @@ func (c *client) CreateFunction(options CreateFunctionOptions, log io.Writer) (*
 	return s, nil
 }
 
+func (c *client) writeRiffToml(options CreateFunctionOptions) error {
+	t := struct {
+		Override string `toml:"override"`
+		Handler  string `toml:"handler"`
+		Artifact string `toml:"artifact"`
+	}{
+		Override: options.Invoker,
+		Handler:  options.Handler,
+		Artifact: options.Artifact,
+	}
+	path := filepath.Join(options.LocalPath, "riff.toml")
+	if _, err := os.Stat(path); err != nil && !os.IsNotExist(err) {
+		return err
+	} else if err == nil {
+		return fmt.Errorf("found riff.toml file in local path. Please delete this file and let the CLI create it from flags")
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return toml.NewEncoder(f).Encode(t)
+}
+
+func (c *client) deleteRiffToml(options CreateFunctionOptions) error {
+	path := filepath.Join(options.LocalPath, "riff.toml")
+	return os.Remove(path)
+}
+
 func (c *client) makeBuildSourceSpec(options CreateFunctionOptions) *build.SourceSpec {
 	return &build.SourceSpec{
 		Git: &build.GitSourceSpec{
@@ -171,6 +191,22 @@ func (c *client) makeBuildSourceSpec(options CreateFunctionOptions) *build.Sourc
 			Revision: options.GitRevision,
 		},
 	}
+}
+
+func (c *client) makeBuildArguments(options CreateFunctionOptions) []build.ArgumentSpec {
+	args := []build.ArgumentSpec{
+		{Name: "IMAGE", Value: options.Image},
+		{Name: "FUNCTION_ARTIFACT", Value: options.Artifact},
+		{Name: "FUNCTION_HANDLER", Value: options.Handler},
+		{Name: "FUNCTION_LANGUAGE", Value: options.Invoker},
+		// TODO configure buildtemplate based on buildpack image
+		// {Name: "TBD", Value: options.BuildpackImage},
+	}
+	if options.RunImage != "" {
+		// don't overwrite the default with an empty value
+		args = append(args, build.ArgumentSpec{Name: "RUN_IMAGE", Value: options.RunImage})
+	}
+	return args
 }
 
 func (c *client) displayFunctionCreationProgress(serviceNamespace string, serviceName string, logWriter io.Writer, stopChan <-chan struct{}, errChan chan<- error) {
@@ -207,7 +243,7 @@ func (c *client) displayFunctionCreationProgress(serviceNamespace string, servic
 }
 
 func (c *client) revisionName(serviceNamespace string, serviceName string, logWriter io.Writer, stopChan <-chan struct{}) (string, error) {
-	fmt.Fprintf(logWriter, "Waiting for LatestCreatedRevisionName:")
+	fmt.Fprintf(logWriter, "Waiting for LatestCreatedRevisionName\n")
 	revName := ""
 	for {
 		serviceObj, err := c.serving.ServingV1alpha1().Services(serviceNamespace).Get(serviceName, v1.GetOptions{})
@@ -219,7 +255,6 @@ func (c *client) revisionName(serviceNamespace string, serviceName string, logWr
 			break
 		}
 		time.Sleep(1000 * time.Millisecond)
-		fmt.Fprintf(logWriter, ".")
 		select {
 		case <-stopChan:
 			return "", nil
@@ -227,7 +262,7 @@ func (c *client) revisionName(serviceNamespace string, serviceName string, logWr
 			// continue
 		}
 	}
-	fmt.Fprintf(logWriter, " %s\n", revName)
+	fmt.Fprintf(logWriter, "LatestCreatedRevisionName available: %s\n", revName)
 	return revName, nil
 }
 
@@ -286,70 +321,128 @@ func streamLogs(log io.Writer, controller kail.Controller, stopChan <-chan struc
 	}
 }
 
-func (c *client) waitForSuccessOrFailure(namespace string, name string, gen int64, stopChan chan<- struct{}, errChan <-chan error) error {
+type serviceChecker func() (transientErr error, err error)
+
+func (c *client) createServiceChecker(namespace string, name string, gen int64) serviceChecker {
+	return func() (transientErr error, err error) {
+		return checkService(c, namespace, name, gen)
+	}
+}
+
+func (c *client) waitForSuccessOrFailure(namespace string, name string, gen int64, stopChan chan<- struct{}, errChan <-chan error, verbose bool) error {
 	defer close(stopChan)
-	for i := 0; i >= 0; i++ {
+
+	var log io.Writer
+	if verbose {
+		log = os.Stdout
+	} else {
+		log = ioutil.Discard
+	}
+
+	check := c.createServiceChecker(namespace, name, gen)
+
+	return pollService(check, errChan, pollServiceTimeout, pollServicePollingInterval, log)
+}
+
+func pollService(check serviceChecker, errChan <-chan error, timeout time.Duration, sleepDuration time.Duration, log io.Writer) error {
+	sleepTime := time.Duration(0)
+	lastTransientErr := ""
+	for {
 		select {
 		case err := <-errChan:
 			return err
 		default:
 		}
-		time.Sleep(500 * time.Millisecond)
-		service, err := c.service(namespace, name)
+
+		transientError, err := check()
 		if err != nil {
-			return fmt.Errorf("waitForSuccessOrFailure failed to obtain service: %v", err)
-		}
-		if service.Status.ObservedGeneration < gen {
-			// allow some time for service status observed generation to show up
-			if i < 20 {
-				continue
-			}
-			return fmt.Errorf("waitForSuccessOrFailure failed to obtain service status for observedGeneration %d: %v", gen, err)
-		}
-		serviceStatusOptions := ServiceStatusOptions{
-			Namespace: namespace,
-			Name:      name,
-		}
-		cond, err := c.ServiceStatus(serviceStatusOptions)
-		if err != nil {
-			return fmt.Errorf("waitForSuccessOrFailure failed to obtain service status: %v", err)
+			return err
 		}
 
-		switch cond.Status {
-		case corev1.ConditionTrue:
+		if transientError == nil {
 			return nil
-		case corev1.ConditionFalse:
-			someStateIsUnknown := false
-			conds, err := c.ServiceConditions(serviceStatusOptions)
-			if err == nil {
-				for _, c := range conds {
-					if c.Status == corev1.ConditionUnknown {
-						someStateIsUnknown = true
-						break
-					}
-				}
-			}
-			if !someStateIsUnknown {
-				var message string
-				if err != nil {
-					// fall back to a basic message
-					message = cond.Message
-				} else {
-					message = serviceConditionsMessage(conds, cond.Message)
-				}
-				return fmt.Errorf("function creation failed: %s: %s", cond.Reason, message)
-			}
-		default:
-			// keep going until outcome is known
 		}
+
+		if sleepTime >= timeout {
+			fmt.Fprintln(log, "Waiting on function creation timed out")
+			return transientError
+		}
+
+		if te := transientError.Error(); te != lastTransientErr {
+			fmt.Fprintf(log, "Waiting on function creation: %v\n", transientError)
+			lastTransientErr = te
+		}
+
+		time.Sleep(sleepDuration)
+		sleepTime += sleepDuration
 	}
 	return nil
 }
 
-func serviceConditionsMessage(conds []v1alpha1.ServiceCondition, primaryMessage string) string {
+func checkService(c *client, namespace string, name string, gen int64) (transientErr error, err error) {
+	// TODO: Test this
+	service, err := c.service(namespace, name)
+	if err != nil {
+		return nil, fmt.Errorf("checkService failed to obtain service: %v", err)
+	}
+
+	if service.Status.ObservedGeneration < gen {
+		// allow some time for service status observed generation to show up
+		return fmt.Errorf("checkService failed to obtain service status for observedGeneration %d", gen), nil
+	}
+
+	serviceStatusOptions := ServiceStatusOptions{
+		Namespace: namespace,
+		Name:      name,
+	}
+	cond, err := c.ServiceStatus(serviceStatusOptions)
+	if err != nil {
+		return nil, fmt.Errorf("checkService failed to obtain service status: %v", err)
+	}
+
+	switch cond.Status {
+	case corev1.ConditionTrue:
+		return nil, nil
+	case corev1.ConditionFalse:
+		conds, message := c.serviceConditionsWithMessage(serviceStatusOptions, cond)
+		if conds != nil {
+			if s := fetchTransientError(conds); s != "" {
+				return fmt.Errorf("%s: %s: %s", s, cond.Reason, message), nil
+			}
+		}
+		return nil, fmt.Errorf("function creation failed: %s: %s", cond.Reason, message)
+	default:
+		_, message := c.serviceConditionsWithMessage(serviceStatusOptions, cond)
+		return fmt.Errorf("function creation incomplete: service status unknown: %s: %s", cond.Reason, message), nil
+	}
+}
+
+func fetchTransientError(conds duckv1alpha1.Conditions) string {
+	for _, c := range conds {
+		if c.IsUnknown() {
+			return "function creation incomplete: service status false"
+		}
+	}
+	return ""
+}
+
+func (c *client) serviceConditionsWithMessage(options ServiceStatusOptions, cond *duckv1alpha1.Condition) (duckv1alpha1.Conditions, string) {
+	conds, err := c.ServiceConditions(options)
+	var message string
+	if err != nil {
+		// fall back to a basic message
+		message = cond.Message
+	} else {
+		message = serviceConditionsMessage(conds, cond.Message)
+	}
+
+	return conds, message
+}
+
+func serviceConditionsMessage(conds duckv1alpha1.Conditions, primaryMessage string) string {
 	msg := []string{primaryMessage}
 	for _, cond := range conds {
-		if cond.Status == corev1.ConditionFalse && cond.Type != v1alpha1.ServiceConditionReady && cond.Message != primaryMessage {
+		if cond.IsFalse() && cond.Type != v1alpha1.ServiceConditionReady && cond.Message != primaryMessage {
 			msg = append(msg, cond.Message)
 		}
 	}
@@ -391,7 +484,7 @@ func (selectorDisjunction) String() string {
 	panic("implement me")
 }
 
-type BuildFunctionOptions struct {
+type UpdateFunctionOptions struct {
 	Namespace string
 	Name      string
 	LocalPath string
@@ -407,7 +500,7 @@ func (c *client) getServiceSpecGeneration(namespace string, name string) (int64,
 	return s.Spec.Generation, nil
 }
 
-func (c *client) BuildFunction(options BuildFunctionOptions, log io.Writer) error {
+func (c *client) UpdateFunction(buildpackBuilder Builder, options UpdateFunctionOptions, log io.Writer) error {
 	ns := c.explicitOrConfigNamespace(options.Namespace)
 
 	service, err := c.service(options.Namespace, options.Name)
@@ -426,27 +519,26 @@ func (c *client) BuildFunction(options BuildFunctionOptions, log io.Writer) erro
 	annotations := service.Annotations
 	labels := configuration.RevisionTemplate.Labels
 	if labels[functionLabel] == "" {
-		return fmt.Errorf("the service named \"%s\" is not a riff function", options.Name)
+		return fmt.Errorf("the service named \"%s\" is not a %s function", options.Name, env.Cli.Name)
 	}
 
 	c.bumpNonceAnnotation(service)
 
+	appDir := options.LocalPath
+	if build != nil && appDir != "" {
+		return fmt.Errorf("unable to proceed: local path specified for cluster-built service named \"%s\"", options.Name)
+	}
+
 	if build == nil {
-		// function was build locally, attempt to reconstruct configuration
-		appDir := options.LocalPath
+		// function was built locally, attempt to reconstruct configuration
 		buildImage := annotations[buildpackBuildImageAnnotation]
 		runImage := annotations[buildpackRunImageAnnotation]
 		repoName := configuration.RevisionTemplate.Spec.Container.Image
-		publish := publishImage(repoName)
-
-		if buildImage == "" || runImage == "" {
-			return fmt.Errorf("unable to build function locally not built from a buildpack")
-		}
 		if appDir == "" {
 			return fmt.Errorf("local-path must be specified to rebuild function from source")
 		}
 
-		err := pack.Build(appDir, buildImage, runImage, repoName, publish)
+		err := buildLocally(buildpackBuilder, appDir, buildImage, runImage, repoName)
 		if err != nil {
 			return err
 		}
@@ -466,7 +558,7 @@ func (c *client) BuildFunction(options BuildFunctionOptions, log io.Writer) erro
 		)
 		for i := 0; i < 10; i++ {
 			if i >= 10 {
-				return fmt.Errorf("build unsuccesful for \"%s\", service resource was never updated", options.Name)
+				return fmt.Errorf("update unsuccesful for \"%s\", service resource was never updated", options.Name)
 			}
 			time.Sleep(500 * time.Millisecond)
 			nextGen, err = c.getServiceSpecGeneration(options.Namespace, options.Name)
@@ -480,7 +572,7 @@ func (c *client) BuildFunction(options BuildFunctionOptions, log io.Writer) erro
 		if options.Verbose {
 			go c.displayFunctionCreationProgress(ns, service.Name, log, stopChan, errChan)
 		}
-		err = c.waitForSuccessOrFailure(ns, service.Name, nextGen, stopChan, errChan)
+		err = c.waitForSuccessOrFailure(ns, service.Name, nextGen, stopChan, errChan, options.Verbose)
 		if err != nil {
 			return err
 		}
@@ -489,9 +581,12 @@ func (c *client) BuildFunction(options BuildFunctionOptions, log io.Writer) erro
 	return nil
 }
 
-// publishImage returns true unless the name starts with 'dev.local' or 'ko.local'.
-// These names have special meaning within knative and are the only Service
-// images that will pull from the Docker deamon instead of a registry.
-func publishImage(image string) bool {
-	return strings.Index(image, "dev.local/") != 0 && strings.Index(image, "ko.local/") != 0
+func buildLocally(builder Builder, appDir string, buildImage string, runImage string, repoName string) error {
+	if buildImage == "" {
+		return fmt.Errorf("unable to build function locally: buildpack image not specified")
+	}
+	if runImage == "" {
+		return fmt.Errorf("unable to build function locally: run image not specified")
+	}
+	return builder.Build(appDir, buildImage, runImage, repoName)
 }

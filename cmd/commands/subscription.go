@@ -1,8 +1,30 @@
+/*
+ * Copyright 2018 The original author or authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package commands
 
 import (
-	"github.com/knative/eventing/pkg/apis/channels/v1alpha1"
+	"fmt"
+	"io"
+	"strings"
+	"text/template"
+
+	"github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
 	"github.com/projectriff/riff/pkg/core"
+	"github.com/projectriff/riff/pkg/env"
 	. "github.com/spf13/cobra"
 )
 
@@ -35,9 +57,9 @@ func SubscriptionCreate(client *core.Client) *Command {
 		Long: "Create a new, optionally named subscription, binding a service to an input channel. " +
 			"The default name of the subscription is the provided subscriber name. " +
 			"The subscription can optionally be bound to an output channel.",
-		Example: `  riff subscription create --channel tweets --subscriber tweets-logger
-  riff subscription create my-subscription --channel tweets --subscriber tweets-logger
-  riff subscription create --channel tweets --subscriber tweets-logger --reply-to logged-tweets`,
+		Example: `  ` + env.Cli.Name + ` subscription create --channel tweets --subscriber tweets-logger
+  ` + env.Cli.Name + ` subscription create my-subscription --channel tweets --subscriber tweets-logger
+  ` + env.Cli.Name + ` subscription create --channel tweets --subscriber tweets-logger --reply logged-tweets`,
 		Args: ArgValidationConjunction(
 			MaximumNArgs(subscriptionCreateMaxNumberOfArgs),
 			OptionalAtPosition(subscriptionCreateNameIndex, ValidName()),
@@ -64,7 +86,7 @@ func SubscriptionDelete(client *core.Client) *Command {
 	command := &Command{
 		Use:     "delete",
 		Short:   "Delete an existing subscription",
-		Example: "  riff subscription delete my-subscription --namespace joseph-ns",
+		Example: "  " + env.Cli.Name + " subscription delete my-subscription --namespace joseph-ns",
 		Args: ArgValidationConjunction(
 			ExactArgs(subscriptionDeleteNumberOfArgs),
 			AtPosition(subscriptionDeleteNameIndex, ValidName()),
@@ -89,11 +111,13 @@ func SubscriptionDelete(client *core.Client) *Command {
 func SubscriptionList(client *core.Client) *Command {
 	listOptions := core.ListSubscriptionsOptions{}
 
+	displayFormat := ""
+
 	command := &Command{
 		Use:   "list",
 		Short: "List existing subscriptions",
-		Example: `  riff subscription list
-  riff subscription list --namespace joseph-ns`,
+		Example: `  ` + env.Cli.Name + ` subscription list
+  ` + env.Cli.Name + ` subscription list --namespace joseph-ns`,
 		Args: ExactArgs(subscriptionListNumberOfArgs),
 		RunE: func(cmd *Command, args []string) error {
 			subscriptions, err := (*client).ListSubscriptions(listOptions)
@@ -101,23 +125,58 @@ func SubscriptionList(client *core.Client) *Command {
 				return err
 			}
 
-			Display(cmd.OutOrStdout(), subscriptionToInterfaceSlice(subscriptions.Items), makeSubscriptionExtractors())
-			PrintSuccessfulCompletion(cmd)
-			return nil
+			if displayFormat == "" {
+				Display(cmd.OutOrStdout(), subscriptionToInterfaceSlice(subscriptions.Items), makeSubscriptionExtractors())
+				PrintSuccessfulCompletion(cmd)
+				return nil
+			} else if displayFormat == "dot" {
+				return displayAsDot(cmd.OutOrStdout(), subscriptions.Items)
+			} else {
+				return fmt.Errorf("unsupported output format %q", displayFormat)
+			}
 		},
 	}
 
 	flags := command.Flags()
 	flags.StringVarP(&listOptions.Namespace, "namespace", "n", "", "the namespace of the subscriptions")
+	flags.StringVarP(&displayFormat, "output", "o", "", "the custom output format to use. Use 'dot' to output graphviz representation")
 
 	return command
+}
+
+func displayAsDot(out io.Writer, subscriptions []v1alpha1.Subscription) error {
+	tmpl := template.New("dot")
+	tmpl.Funcs(map[string]interface{}{"chop": chop})
+	tmpl, err := tmpl.Parse(`digraph finite_state_machine {
+	rankdir=LR;
+	size="8,5"
+    node [shape = "box"] {{range .}}{{.Spec.Subscriber}}; {{end}}
+    node [shape = "diamond", style = "rounded"] {{range .}}{{.Spec.Channel}}; {{end}}
+{{range . -}}
+    "{{.Spec.Channel}}" -> "{{.Spec.Subscriber}}";
+    {{if ne .Spec.ReplyTo ""}}"{{.Spec.Subscriber}}" -> "{{chop .Spec.ReplyTo }}";{{end}}
+{{- end}}
+}`)
+	if err != nil {
+		return err
+	}
+	return tmpl.Execute(out, subscriptions)
+}
+
+// chop removes the '-channel' suffix from the reply-to
+func chop(channelName string) (string, error) {
+	if strings.HasSuffix(channelName, "-channel") {
+		return channelName[0 : len(channelName)-len("-channel")], nil
+	} else {
+		return "", fmt.Errorf("%q does not end with %q", channelName, "-channel")
+	}
 }
 
 func defineFlagsForCreate(command *Command, options *core.CreateSubscriptionOptions) {
 	flags := command.Flags()
 	flags.StringVarP(&options.Subscriber, "subscriber", "s", "", "the subscriber of the subscription")
 	flags.StringVarP(&options.Channel, "channel", "c", "", "the input channel of the subscription")
-	flags.StringVarP(&options.ReplyTo, "reply-to", "r", "", "the optional output channel of the subscription")
+	flags.StringVarP(&options.Reply, "reply", "r", "", "the optional output channel of the subscription")
 	flags.StringVarP(&options.Namespace, "namespace", "n", "", "the namespace of the subscription")
 	command.MarkFlagRequired("subscriber")
 	command.MarkFlagRequired("channel")
@@ -146,15 +205,33 @@ func makeSubscriptionExtractors() []NamedExtractor {
 		},
 		{
 			name: "CHANNEL",
-			fn:   func(s interface{}) string { return s.(v1alpha1.Subscription).Spec.Channel },
+			fn:   func(s interface{}) string { return s.(v1alpha1.Subscription).Spec.Channel.Name },
 		},
 		{
 			name: "SUBSCRIBER",
-			fn:   func(s interface{}) string { return s.(v1alpha1.Subscription).Spec.Subscriber },
+			fn: func(s interface{}) string {
+				ss := s.(v1alpha1.Subscription).Spec.Subscriber
+				if ss == nil {
+					return ""
+				}
+				if ss.Ref != nil {
+					return ss.Ref.Name
+				}
+				if ss.DNSName != nil {
+					return *ss.DNSName
+				}
+				return "<invalid>"
+			},
 		},
 		{
-			name: "REPLY-TO",
-			fn:   func(s interface{}) string { return s.(v1alpha1.Subscription).Spec.ReplyTo },
+			name: "REPLY",
+			fn: func(s interface{}) string {
+				r := s.(v1alpha1.Subscription).Spec.Reply
+				if r == nil {
+					return ""
+				}
+				return r.Channel.Name
+			},
 		},
 	}
 }

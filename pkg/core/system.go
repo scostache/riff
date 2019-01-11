@@ -21,11 +21,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/projectriff/riff/pkg/resource"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/projectriff/riff/pkg/fileutils"
+
+	"github.com/projectriff/riff/pkg/env"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -48,8 +50,8 @@ var (
 	allNameSpaces     = append(knativeNamespaces, istioNamespace)
 )
 
-func (kc *kubectlClient) SystemInstall(options SystemInstallOptions) (bool, error) {
-	manifest, err := NewManifest(options.Manifest)
+func (kc *kubectlClient) SystemInstall(manifests map[string]*Manifest, options SystemInstallOptions) (bool, error) {
+	manifest, err := ResolveManifest(manifests, options.Manifest)
 	if err != nil {
 		return false, err
 	}
@@ -104,13 +106,18 @@ func (kc *kubectlClient) applyReleaseWithRetry(release string, options SystemIns
 	err := kc.applyRelease(release, options)
 	if err != nil {
 		fmt.Printf("Error applying resources, trying again\n")
+		time.Sleep(5 * time.Second) // wait for previous resources to be created
 		return kc.applyRelease(release, options)
 	}
 	return nil
 }
 
 func (kc *kubectlClient) applyRelease(release string, options SystemInstallOptions) error {
-	yaml, err := resource.Load(release, filepath.Dir(options.Manifest))
+	dir, err := fileutils.Dir(options.Manifest)
+	if err != nil {
+		return err
+	}
+	yaml, err := fileutils.Read(release, dir)
 	if err != nil {
 		return err
 	}
@@ -126,12 +133,12 @@ func (kc *kubectlClient) applyRelease(release string, options SystemInstallOptio
 
 To fix this you need to:
  1. Delete the current failed installation using:
-      riff system uninstall --istio --force
+      ` + env.Cli.Name + ` system uninstall --istio --force
  2. Give the user account used for installation cluster-admin permissions, you can use the following command:
       kubectl create clusterrolebinding cluster-admin-binding \
         --clusterrole=cluster-admin \
         --user=<install-user>
- 3. Re-install riff
+ 3. Re-install ` + env.Cli.Name + `
 
 `)
 		}
@@ -152,10 +159,10 @@ func (kc *kubectlClient) SystemUninstall(options SystemUninstallOptions) (bool, 
 		return false, err
 	}
 	if knativeNsCount == 0 {
-		fmt.Print("No Knative components for riff found\n")
+		fmt.Print("No Knative components for " + env.Cli.Name + " found\n")
 	} else {
 		if !options.Force {
-			answer, err := confirm("Are you sure you want to uninstall the riff system?")
+			answer, err := confirm("Are you sure you want to uninstall the " + env.Cli.Name + " system?")
 			if err != nil {
 				return false, err
 			}
@@ -163,7 +170,7 @@ func (kc *kubectlClient) SystemUninstall(options SystemUninstallOptions) (bool, 
 				return false, nil
 			}
 		}
-		fmt.Print("Removing Knative for riff components\n")
+		fmt.Print("Removing Knative for " + env.Cli.Name + " components\n")
 		err = deleteCrds(kc, "knative.dev")
 		if err != nil {
 			return false, err
@@ -180,7 +187,11 @@ func (kc *kubectlClient) SystemUninstall(options SystemUninstallOptions) (bool, 
 		if err != nil {
 			return false, err
 		}
-		err = deleteClusterResources(kc, "clusterrolebinding", "clusterbus-controller-")
+		err = deleteClusterResources(kc, "clusterrolebinding", "in-memory-channel-")
+		if err != nil {
+			return false, err
+		}
+		err = deleteClusterResources(kc, "clusterrole", "in-memory-channel-")
 		if err != nil {
 			return false, err
 		}
@@ -188,6 +199,9 @@ func (kc *kubectlClient) SystemUninstall(options SystemUninstallOptions) (bool, 
 		if err != nil {
 			return false, err
 		}
+		deleteSingleResource(kc, "service", "knative-ingressgateway", "istio-system")
+		deleteSingleResource(kc, "horizontalpodautoscaler", "knative-ingressgateway", "istio-system")
+		deleteSingleResource(kc, "deployment", "knative-ingressgateway", "istio-system")
 		err = deleteNamespaces(kc, knativeNamespaces)
 		if err != nil {
 			return false, err
@@ -225,6 +239,8 @@ func (kc *kubectlClient) SystemUninstall(options SystemUninstallOptions) (bool, 
 		if err != nil {
 			return false, err
 		}
+		// TODO: remove this once https://github.com/knative/serving/issues/2018 is resolved
+		deleteSingleResource(kc, "horizontalpodautoscaler.autoscaling", "istio-pilot", "")
 	}
 	return true, nil
 }
@@ -232,11 +248,16 @@ func (kc *kubectlClient) SystemUninstall(options SystemUninstallOptions) (bool, 
 func waitForIstioComponents(kc *kubectlClient) error {
 	fmt.Print("Waiting for the Istio components to start ")
 	for i := 0; i < 36; i++ {
+		time.Sleep(10 * time.Second) // wait for them to start
 		fmt.Print(".")
 		pods := kc.kubeClient.CoreV1().Pods(istioNamespace)
 		podList, err := pods.List(metav1.ListOptions{})
 		if err != nil {
 			return err
+		}
+		if len(podList.Items) < 3 {
+			// make sure we found pods and not that the system is slow to create pods
+			continue
 		}
 		waitLonger := false
 		for _, pod := range podList.Items {
@@ -262,7 +283,6 @@ func waitForIstioComponents(kc *kubectlClient) error {
 			fmt.Print(" all components are 'Running'\n\n")
 			return nil
 		}
-		time.Sleep(10 * time.Second) // wait for them to start
 	}
 	return errors.New("the Istio components did not start in time")
 }
@@ -280,6 +300,24 @@ func deleteNamespaces(kc *kubectlClient, namespaces []string) error {
 		}
 	}
 	return nil
+}
+
+func deleteSingleResource(kc *kubectlClient, resourceType string, name string, namespace string) error {
+	var err error
+	var deleteLog string
+	if namespace == "" {
+		fmt.Printf("Deleting %s/%s resource\n", resourceType, name)
+		deleteLog, err = kc.kubeCtl.Exec([]string{"delete", resourceType, name})
+	} else {
+		fmt.Printf("Deleting %s/%s resource in %s\n", resourceType, name, namespace)
+		deleteLog, err = kc.kubeCtl.Exec([]string{"delete", "-n", namespace, resourceType, name})
+	}
+	if err != nil {
+		if !strings.Contains(deleteLog, "NotFound") {
+			fmt.Printf("%s", deleteLog)
+		}
+	}
+	return err
 }
 
 func deleteClusterResources(kc *kubectlClient, resourceType string, prefix string) error {

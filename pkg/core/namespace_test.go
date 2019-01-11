@@ -39,6 +39,7 @@ var _ = Describe("The NamespaceInit function", func() {
 		mockNamespaces      *vendor_mocks.NamespaceInterface
 		mockServiceAccounts *vendor_mocks.ServiceAccountInterface
 		mockSecrets         *vendor_mocks.SecretInterface
+		manifests           map[string]*Manifest
 	)
 
 	JustBeforeEach(func() {
@@ -64,8 +65,8 @@ var _ = Describe("The NamespaceInit function", func() {
 
 	It("should fail on wrong manifest", func() {
 		options := NamespaceInitOptions{Manifest: "wrong"}
-		err := kubectlClient.NamespaceInit(options)
-		Expect(err).To(MatchError(ContainSubstring("wrong: no such file")))
+		err := kubectlClient.NamespaceInit(manifests, options)
+		Expect(err).To(MatchError(ContainSubstring("wrong: "))) // error message is quite different on Windows and macOS
 	})
 
 	It("should create namespace and sa if needed", func() {
@@ -86,7 +87,7 @@ var _ = Describe("The NamespaceInit function", func() {
 		mockServiceAccounts.On("Get", serviceAccountName, mock.Anything).Return(nil, notFound())
 		mockServiceAccounts.On("Create", mock.MatchedBy(named(serviceAccountName))).Return(serviceAccount, nil)
 
-		err := kubectlClient.NamespaceInit(options)
+		err := kubectlClient.NamespaceInit(manifests, options)
 		Expect(err).To(Not(HaveOccurred()))
 	})
 
@@ -106,7 +107,7 @@ var _ = Describe("The NamespaceInit function", func() {
 		mockServiceAccounts.On("Get", serviceAccountName, mock.Anything).Return(serviceAccount, nil)
 
 		secret := &v1.Secret{}
-		mockSecrets.On("Get", "push-credentials", meta_v1.GetOptions{}).Return(nil, notFound())
+		mockSecrets.On("Delete", "push-credentials", &meta_v1.DeleteOptions{}).Return(nil)
 		mockSecrets.On("Create", mock.Anything).Run(func(args mock.Arguments) {
 			s := args[0].(*v1.Secret)
 			Expect(s.StringData).To(HaveKeyWithValue("username", "_json_key"))
@@ -120,7 +121,7 @@ var _ = Describe("The NamespaceInit function", func() {
 			})))
 		}).Return(serviceAccount, nil)
 
-		err := kubectlClient.NamespaceInit(options)
+		err := kubectlClient.NamespaceInit(manifests, options)
 		Expect(err).To(Not(HaveOccurred()))
 	})
 
@@ -154,7 +155,7 @@ var _ = Describe("The NamespaceInit function", func() {
 			mockServiceAccounts.On("Get", serviceAccountName, mock.Anything).Return(serviceAccount, nil)
 
 			secret := &v1.Secret{}
-			mockSecrets.On("Get", "push-credentials", meta_v1.GetOptions{}).Return(nil, notFound())
+			mockSecrets.On("Delete", "push-credentials", &meta_v1.DeleteOptions{}).Return(nil)
 			mockSecrets.On("Create", mock.Anything).Run(func(args mock.Arguments) {
 				s := args[0].(*v1.Secret)
 				Expect(s.StringData).To(HaveKeyWithValue("username", "roger"))
@@ -168,10 +169,29 @@ var _ = Describe("The NamespaceInit function", func() {
 				})))
 			}).Return(serviceAccount, nil)
 
-			err := kubectlClient.NamespaceInit(options)
+			err := kubectlClient.NamespaceInit(manifests, options)
 			Expect(err).To(Not(HaveOccurred()))
 		})
 	})
+
+	It("should run unauthenticated and still create a service account", func() {
+		options := NamespaceInitOptions{
+			Manifest:      "fixtures/empty.yaml",
+			NamespaceName: "foo",
+			NoSecret:      true,
+		}
+
+		namespace := &v1.Namespace{ObjectMeta: meta_v1.ObjectMeta{Name: "foo"}}
+		mockNamespaces.On("Get", "foo", mock.Anything).Return(namespace, nil)
+
+		serviceAccount := &v1.ServiceAccount{}
+		mockServiceAccounts.On("Get", serviceAccountName, mock.Anything).Return(nil, notFound())
+		mockServiceAccounts.On("Create", mock.MatchedBy(named(serviceAccountName))).Return(serviceAccount, nil)
+
+		err := kubectlClient.NamespaceInit(manifests, options)
+		Expect(err).To(Not(HaveOccurred()))
+	})
+
 })
 
 func notFound() *errors.StatusError {

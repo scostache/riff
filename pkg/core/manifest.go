@@ -12,12 +12,12 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package core
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -29,112 +29,23 @@ import (
 
 const manifestVersion_0_1 = "0.1"
 
-var manifests = map[string]*Manifest{
-	"latest": &Manifest{
-		ManifestVersion: manifestVersion_0_1,
-		Istio: []string{
-			"https://storage.googleapis.com/knative-releases/serving/latest/istio.yaml",
-		},
-		Knative: []string{
-			"https://storage.googleapis.com/knative-releases/build/latest/release.yaml",
-			"https://storage.googleapis.com/knative-releases/serving/latest/serving.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/latest/release.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/latest/release-clusterbus-stub.yaml",
-		},
-		Namespace: []string{
-			"https://storage.googleapis.com/riff-releases/latest/riff-build.yaml",
-			"https://storage.googleapis.com/riff-releases/riff-cnb-buildtemplate-0.1.0.pre.3.yaml",
-		},
-	},
-	"stable": &Manifest{
-		ManifestVersion: manifestVersion_0_1,
-		Istio: []string{
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20181009-38c0d50/istio.yaml",
-		},
-		Knative: []string{
-			"https://storage.googleapis.com/knative-releases/build/previous/v20181009-62d2284/release.yaml",
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20181009-38c0d50/serving.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20181009-95ed4b7/release.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20181009-95ed4b7/release-clusterbus-stub.yaml",
-		},
-		Namespace: []string{
-			"https://storage.googleapis.com/riff-releases/previous/riff-build/riff-build-0.1.0.yaml",
-			"https://storage.googleapis.com/riff-releases/riff-cnb-buildtemplate-0.1.0.yaml",
-		},
-	},
-	"v0.1.3": &Manifest{
-		ManifestVersion: manifestVersion_0_1,
-		Istio: []string{
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20180921-69811e7/istio.yaml",
-		},
-		Knative: []string{
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20180921-69811e7/release-no-mon.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20180921-01f95cb/release.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20180921-01f95cb/release-clusterbus-stub.yaml",
-		},
-		Namespace: []string{
-			"https://storage.googleapis.com/riff-releases/previous/riff-build/riff-build-0.1.0.yaml",
-			"https://storage.googleapis.com/riff-releases/riff-cnb-buildtemplate-0.1.0.yaml",
-		},
-	},
-	"v0.1.2": &Manifest{
-		ManifestVersion: manifestVersion_0_1,
-		Istio: []string{
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20180828-7c20145/istio.yaml",
-		},
-		Knative: []string{
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20180828-7c20145/release-no-mon.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20180830-5d35af5/release.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20180830-5d35af5/release-clusterbus-stub.yaml",
-		},
-		Namespace: []string{
-			"https://storage.googleapis.com/riff-releases/previous/riff-build/riff-build-0.1.0.yaml",
-		},
-	},
-	"v0.1.1": &Manifest{
-		ManifestVersion: manifestVersion_0_1,
-		Istio: []string{
-			"https://storage.googleapis.com/riff-releases/istio/istio-1.0.0-riff-crds.yaml",
-			"https://storage.googleapis.com/riff-releases/istio/istio-1.0.0-riff-main.yaml",
-		},
-		Knative: []string{
-			"https://storage.googleapis.com/knative-releases/serving/previous/v20180809-6b01d8e/release-no-mon.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20180809-34ab480/release.yaml",
-			"https://storage.googleapis.com/knative-releases/eventing/previous/v20180809-34ab480/release-clusterbus-stub.yaml",
-		},
-		Namespace: []string{
-			"https://storage.googleapis.com/riff-releases/previous/riff-build/riff-build-0.1.0.yaml",
-		},
-	},
-	"v0.1.0": &Manifest{
-		ManifestVersion: manifestVersion_0_1,
-		Istio: []string{
-			"https://storage.googleapis.com/riff-releases/istio-riff-0.1.0.yaml",
-		},
-		Knative: []string{
-			"https://storage.googleapis.com/riff-releases/release-no-mon-riff-0.1.0.yaml",
-			"https://storage.googleapis.com/riff-releases/release-eventing-riff-0.1.0.yaml",
-			"https://storage.googleapis.com/riff-releases/release-eventing-clusterbus-stub-riff-0.1.0.yaml",
-		},
-		Namespace: []string{
-			"https://storage.googleapis.com/riff-releases/previous/riff-build/riff-build-0.1.0.yaml",
-		},
-	},
-}
-
 // Manifest defines the location of YAML files for system components.
 type Manifest struct {
 	ManifestVersion string   `json:"manifestVersion"`
 	Istio           []string `json:"istio"`
 	Knative         []string `json:"knative"`
 	Namespace       []string `json:"namespace"`
+	manifestDir     string
 }
 
-func NewManifest(path string) (*Manifest, error) {
+func ResolveManifest(manifests map[string]*Manifest, path string) (*Manifest, error) {
 	if manifest, ok := manifests[path]; ok {
 		return manifest, nil
 	}
+	return NewManifest(path)
+}
 
+func NewManifest(path string) (*Manifest, error) {
 	var m Manifest
 	yamlFile, err := fileutils.Read(path, "")
 	if err != nil {
@@ -160,6 +71,11 @@ func NewManifest(path string) (*Manifest, error) {
 		return nil, err
 	}
 
+	m.manifestDir, err = fileutils.Dir(path)
+	if err != nil {
+		return nil, err
+	}
+
 	return &m, nil
 }
 
@@ -175,6 +91,29 @@ func (m *Manifest) VisitResources(f func(resource string) error) error {
 	return nil
 }
 
+// ResourceAbsolutePath takes a path to a resource and returns an equivalent absolute path.
+// If the input path is a http(s) URL or is an absolute file path, it is returned without modification.
+// If the input path is a file URL, the corresponding (absolute) file path is returned.
+// If the input path is a relative file path, it is interpreted to be relative to the directory from which the
+// manifest was read (and if the manifest was not read from a directory, an error is returned) and the corresponding
+// absolute file path is returned.
+func (m *Manifest) ResourceAbsolutePath(path string) (string, error) {
+	absolute, canonicalPath, err := fileutils.IsAbsFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	if absolute {
+		return canonicalPath, nil
+	}
+
+	if m.manifestDir == "" {
+		return "", errors.New("relative path undefined since manifest was not read from a directory")
+	}
+
+	return fileutils.AbsFile(path, m.manifestDir)
+}
+
 func checkCompleteness(m Manifest) error {
 	var omission string
 	if m.Istio == nil {
@@ -186,10 +125,14 @@ func checkCompleteness(m Manifest) error {
 	} else {
 		return nil
 	}
-	return fmt.Errorf("Manifest is incomplete: %s array missing: %#v", omission, m)
+	return fmt.Errorf("manifest is incomplete: %s array missing: %#v", omission, m)
 }
 
 func checkResource(resource string) error {
+	if filepath.IsAbs(resource) {
+		return fmt.Errorf("resources must use a http or https URL or a relative path: absolute path not supported: %s", resource)
+	}
+
 	u, err := url.Parse(resource)
 	if err != nil {
 		return err

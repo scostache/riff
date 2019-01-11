@@ -12,7 +12,6 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package fileutils
@@ -25,6 +24,9 @@ import (
 
 // Dir returns the directory portion of the given file.
 func Dir(file string) (string, error) {
+	if filepath.IsAbs(file) {
+		return filepath.Dir(file), nil
+	}
 	u, err := url.Parse(file)
 	if err != nil {
 		return "", err

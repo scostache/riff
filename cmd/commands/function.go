@@ -20,18 +20,18 @@ import (
 	"fmt"
 
 	"github.com/projectriff/riff/pkg/core"
+	"github.com/projectriff/riff/pkg/env"
 	"github.com/spf13/cobra"
 )
 
 const (
-	functionCreateInvokerIndex = iota
-	functionCreateFunctionNameIndex
+	functionCreateFunctionNameIndex = iota
 	functionCreateNumberOfArgs
 )
 
 const (
-	functionBuildFunctionNameIndex = iota
-	functionBuildNumberOfArgs
+	functionUpdateFunctionNameIndex = iota
+	functionUpdateNumberOfArgs
 )
 
 func Function() *cobra.Command {
@@ -41,72 +41,43 @@ func Function() *cobra.Command {
 	}
 }
 
-func FunctionCreate(fcTool *core.Client) *cobra.Command {
-	createFunctionOptions := core.CreateFunctionOptions{}
+// FunctionCreateDefaults contains values for "defaults" or "constants" that
+// can be overridden depending on the actual CLI tool being built.
+type FunctionCreateDefaults struct {
+	LocalBuilder    string // the image for the builder used when building locally
+	DefaultRunImage string // the default for the --run-image flag.
+}
 
-	// runtime definitions
-	buildpacks := map[string]string{
-		"java": "projectriff/buildpack",
+func FunctionCreate(buildpackBuilder core.Builder, fcTool *core.Client, defaults FunctionCreateDefaults) *cobra.Command {
+	createFunctionOptions := core.CreateFunctionOptions{
+		BuildpackImage: defaults.LocalBuilder,
+		RunImage:       defaults.DefaultRunImage,
 	}
-	invokers := map[string]string{
-		"jar":     "https://github.com/projectriff/java-function-invoker/raw/v0.1.1/java-invoker.yaml",
-		"command": "https://github.com/projectriff/command-function-invoker/raw/v0.0.7/command-invoker.yaml",
-		"node":    "https://github.com/projectriff/node-function-invoker/raw/v0.0.8/node-invoker.yaml",
-	}
-
-	flagsValidator := AtLeastOneOf("git-repo", "local-path")
 
 	command := &cobra.Command{
 		Use:   "create",
 		Short: "Create a new function resource",
-		Long: "Create a new function resource from the content of the provided Git repo/revision or local source.\n" +
-			"\nThe INVOKER arg defines the language runtime and function invoker that is added to the function code in the build step. The resulting image is then used to create a Knative Service (`service.serving.knative.dev`) instance of the name specified for the function. The following invokers are available:\n\n" +
-			"- 'java': uses the riff Buildpack to build Maven or Gradle projects from source\n" +
-			"- 'jar': uses riff's java-function-invoker build for a prebuilt JAR file\n" +
-			"- 'node': uses riff's node-function-invoker build\n" +
-			"- 'command': uses riff's command-function-invoker build\n" +
-			"- 'custom': use a custom invoker. Specify with --invoker-url flag\n" +
-			"\nBuildpack based builds support building from local source or within the cluster. Images will be pushed to the registry specified in the image name, unless prefixed with 'dev.local/' in which case the image will only be available within the local Docker daemon.\n" +
-			"\nFrom then on you can use the sub-commands for the `service` command to interact with the service created for the function.\n\n" +
+		Long: "Create a new function resource from the content of the provided Git repo/revision or local source.\n\n" +
+			"The --invoker flag can be used to force the language runtime and function invoker that is added to the function code in the build step. The resulting image is then used to create a Knative Service (`service.serving.knative.dev`) instance of the name specified for the function.\n\n" +
+			"Images will be pushed to the registry specified in the image name.\n\n" +
+			"From then on you can use the sub-commands for the `service` command to interact with the service created for the function.\n\n" +
 			envFromLongDesc + "\n",
-		Example: `  riff function create node square --git-repo https://github.com/acme/square --image acme/square --namespace joseph-ns
-  riff function create java tweets-logger --git-repo https://github.com/acme/tweets --image acme/tweets-logger:1.0.0`,
+		Example: `  ` + env.Cli.Name + ` function create square --git-repo https://github.com/acme/square --artifact square.js --image acme/square --invoker node --namespace joseph-ns
+  ` + env.Cli.Name + ` function create tweets-logger --git-repo https://github.com/acme/tweets --image acme/tweets-logger:1.0.0`,
+		PreRunE: FlagsValidatorAsCobraRunE(AtLeastOneOf("git-repo", "local-path")),
 		Args: ArgValidationConjunction(
 			cobra.ExactArgs(functionCreateNumberOfArgs),
-			AtPosition(functionCreateInvokerIndex, ValidName()),
 			AtPosition(functionCreateFunctionNameIndex, ValidName()),
 		),
-		PreRunE: func(cmd *cobra.Command, args []string) error {
-			err := flagsValidator(cmd)
-			if err != nil {
-				return err
-			}
-
-			invoker := args[functionCreateInvokerIndex]
-			if invoker != "custom" && createFunctionOptions.InvokerURL != "" {
-				return fmt.Errorf("--invoker-url is only available for the custom invoker")
-			} else if invoker == "custom" && createFunctionOptions.InvokerURL == "" {
-				return fmt.Errorf("--invoker-url is required for the custom invoker")
-			}
-
-			return nil
-		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if defaults.LocalBuilder == "" && createFunctionOptions.LocalPath != "" {
+				return fmt.Errorf("building from a local path requires that the builder be set. " +
+					"Refer to documentation to set the value in your environment")
+			}
 			fnName := args[functionCreateFunctionNameIndex]
 
-			invoker := args[functionCreateInvokerIndex]
-			createFunctionOptions.Invoker = invoker
-
-			if buildpack, exists := buildpacks[invoker]; exists {
-				createFunctionOptions.BuildpackImage = buildpack
-			} else if invokerURL, exists := invokers[invoker]; exists {
-				createFunctionOptions.InvokerURL = invokerURL
-			} else if invoker != "custom" {
-				return fmt.Errorf("unknown invoker: %s", invoker)
-			}
-
 			createFunctionOptions.Name = fnName
-			f, err := (*fcTool).CreateFunction(createFunctionOptions, cmd.OutOrStdout())
+			f, err := (*fcTool).CreateFunction(buildpackBuilder, createFunctionOptions, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -123,7 +94,7 @@ func FunctionCreate(fcTool *core.Client) *cobra.Command {
 					if createFunctionOptions.Namespace != "" {
 						namespaceOption = fmt.Sprintf(" -n %s", createFunctionOptions.Namespace)
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "Issue `riff service status %s%s` to see the status of the function\n", fnName, namespaceOption)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Issue `%s service status %s%s` to see the status of the function\n", env.Cli.Name, fnName, namespaceOption)
 				}
 			}
 
@@ -131,16 +102,16 @@ func FunctionCreate(fcTool *core.Client) *cobra.Command {
 		},
 	}
 
-	LabelArgs(command, "INVOKER", "FUNCTION_NAME")
+	LabelArgs(command, "FUNCTION_NAME")
 
 	command.Flags().StringVarP(&createFunctionOptions.Namespace, "namespace", "n", "", "the `namespace` of the service")
 	command.Flags().BoolVarP(&createFunctionOptions.DryRun, "dry-run", "", false, dryRunUsage)
 	command.Flags().StringVar(&createFunctionOptions.Image, "image", "", "the name of the image to build; must be a writable `repository/image[:tag]` with credentials configured")
-	command.Flags().StringVar(&createFunctionOptions.InvokerURL, "invoker-url", "", "the path to a custom invoker url. Required if invoker is custom.")
 	command.MarkFlagRequired("image")
+	command.Flags().StringVar(&createFunctionOptions.Invoker, "invoker", "", "invoker runtime to override `language` detected by buildpack")
 	command.Flags().StringVar(&createFunctionOptions.GitRepo, "git-repo", "", "the `URL` for a git repository hosting the function code")
 	command.Flags().StringVar(&createFunctionOptions.GitRevision, "git-revision", "master", "the git `ref-spec` of the function code to use")
-	command.Flags().StringVarP(&createFunctionOptions.LocalPath, "local-path", "l", "", "`path` to local source to build the image from")
+	command.Flags().StringVarP(&createFunctionOptions.LocalPath, "local-path", "l", "", "`path` to local source to build the image from; only build-pack builds are supported at this time")
 	command.Flags().StringVar(&createFunctionOptions.Handler, "handler", "", "the name of the `method or class` to invoke, depending on the invoker used")
 	command.Flags().StringVar(&createFunctionOptions.Artifact, "artifact", "", "`path` to the function source code or jar file; auto-detected if not specified")
 	command.Flags().BoolVarP(&createFunctionOptions.Verbose, "verbose", "v", false, verboseUsage)
@@ -152,24 +123,24 @@ func FunctionCreate(fcTool *core.Client) *cobra.Command {
 	return command
 }
 
-func FunctionBuild(fcTool *core.Client) *cobra.Command {
+func FunctionUpdate(buildpackBuilder core.Builder, fcTool *core.Client) *cobra.Command {
 
-	buildFunctionOptions := core.BuildFunctionOptions{}
+	updateFunctionOptions := core.UpdateFunctionOptions{}
 
 	command := &cobra.Command{
-		Use:     "build",
-		Short:   "Trigger a revision build for a function resource",
-		Example: `  riff function build square`,
+		Use:     "update",
+		Short:   "Trigger a build to generate a new revision for a function resource",
+		Example: `  ` + env.Cli.Name + ` function update square`,
 		Args: ArgValidationConjunction(
-			cobra.ExactArgs(functionBuildNumberOfArgs),
-			AtPosition(functionBuildFunctionNameIndex, ValidName()),
+			cobra.ExactArgs(functionUpdateNumberOfArgs),
+			AtPosition(functionUpdateFunctionNameIndex, ValidName()),
 		),
 		RunE: func(cmd *cobra.Command, args []string) error {
 
-			fnName := args[functionBuildFunctionNameIndex]
+			fnName := args[functionUpdateFunctionNameIndex]
 
-			buildFunctionOptions.Name = fnName
-			err := (*fcTool).BuildFunction(buildFunctionOptions, cmd.OutOrStdout())
+			updateFunctionOptions.Name = fnName
+			err := (*fcTool).UpdateFunction(buildpackBuilder, updateFunctionOptions, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -182,10 +153,10 @@ func FunctionBuild(fcTool *core.Client) *cobra.Command {
 
 	LabelArgs(command, "FUNCTION_NAME")
 
-	command.Flags().StringVarP(&buildFunctionOptions.Namespace, "namespace", "n", "", "the `namespace` of the function")
-	command.Flags().StringVarP(&buildFunctionOptions.LocalPath, "local-path", "l", "", "path to local source to build the image from")
-	command.Flags().BoolVarP(&buildFunctionOptions.Verbose, "verbose", "v", false, verboseUsage)
-	command.Flags().BoolVarP(&buildFunctionOptions.Wait, "wait", "w", false, waitUsage)
+	command.Flags().StringVarP(&updateFunctionOptions.Namespace, "namespace", "n", "", "the `namespace` of the function")
+	command.Flags().StringVarP(&updateFunctionOptions.LocalPath, "local-path", "l", "", "path to local source to build the image from; only build-pack builds are supported at this time")
+	command.Flags().BoolVarP(&updateFunctionOptions.Verbose, "verbose", "v", false, verboseUsage)
+	command.Flags().BoolVarP(&updateFunctionOptions.Wait, "wait", "w", false, waitUsage)
 
 	return command
 }

@@ -12,7 +12,6 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package core
@@ -23,9 +22,9 @@ import (
 )
 
 type KubectlClient interface {
-	SystemInstall(options SystemInstallOptions) (bool, error)
+	SystemInstall(manifests map[string]*Manifest, options SystemInstallOptions) (bool, error)
 	SystemUninstall(options SystemUninstallOptions) (bool, error)
-	NamespaceInit(options NamespaceInitOptions) error
+	NamespaceInit(manifests map[string]*Manifest, options NamespaceInitOptions) error
 }
 
 type kubectlClient struct {
