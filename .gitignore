@@ -1,26 +1,12 @@
-debug
-
-### STS ###
-.apt_generated
-.classpath
-.factorypath
+# Eclipe artifacts
 .project
 .settings
-.springBeans
 
-### IntelliJ IDEA ###
+# IntelliJ artifacts
 .idea
-*.iws
-*.iml
-*.ipr
 
-### Coverage artefacts ###
-*.coverprofile
+# Visual Studio Code artifacts
+.vscode
 
+# OS turds
 .DS_Store
-
-/riff
-/riff.exe
-/riff-darwin-amd64.tgz
-/riff-linux-amd64.tgz
-/riff-windows-amd64.zip
